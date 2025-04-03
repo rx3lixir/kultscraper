@@ -2,96 +2,171 @@ package scraper
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/go-rod/rod"
-	"gitub.com/rx3lixir/kultscraper/internal/config"
-
 	"github.com/go-rod/stealth"
+	"github.com/rx3lixir/kultscraper/internal/config"
 )
 
+var (
+	ErrContextCancelled = errors.New("scraping cancelled due to context timeout")
+)
+
+// Scraper интерфейс для скрапинга
 type Scraper interface {
-	Scrape(ctx context.Context, task TaskToScrape) (map[string]string, error)
+	Scrape(ctx context.Context, task config.ScraperTask) (map[string]string, error)
+	Close() error
 }
 
+// RodScraper имплементация Scraper с использованием Rod
 type RodScraper struct {
-	Browser *rod.Browser
-	Logger  log.Logger
+	Browser      *rod.Browser
+	Logger       log.Logger
+	pagePool     *sync.Pool
+	maxPageCount int
+	activePages  int
+	mu           sync.Mutex
 }
 
+// TaskToScrape структура для задачи скрапинга
 type TaskToScrape struct {
 	Task    config.ScraperTask
 	Context context.Context
-	Scraper RodScraper
-	Logger  *log.Logger
+	Scraper Scraper
+	Logger  log.Logger
 }
 
-func (t *TaskToScrape) Execute() (interface{}, error) {
-	res, err := t.Scraper.Scrape(t.Context, t.Task)
+// Execute выполняет задачу скрапинга
+func (t TaskToScrape) Execute() (any, error) {
+	ctx, cancel := context.WithTimeout(t.Context, 30*time.Second)
+	defer cancel()
+
+	res, err := t.Scraper.Scrape(ctx, t.Task)
 	if err != nil {
 		return nil, err
 	}
 
-	t.Logger.Infof("Scraped Result for %v: %s", t.Task.URL, res)
+	t.Logger.Info("Scraped Result", "url", t.Task.URL, "type", t.Task.Type)
 	return res, nil
 }
 
-func (s *TaskToScrape) OnError(err error) {
-	s.Logger.Error("Failed to scrape a task", "error")
+// OnError обрабатывает ошибки
+func (t TaskToScrape) OnError(err error) {
+	t.Logger.Error("Failed to scrape task", "url", t.Task.URL, "error", err)
 }
 
-func NewRodScraper(browser *rod.Browser, logger log.Logger) *RodScraper {
-	return &RodScraper{
-		Browser: browser,
-		Logger:  logger,
+// NewRodScraper создает новый скрапер на основе Rod
+func NewRodScraper(browser *rod.Browser, logger log.Logger, maxPages int) *RodScraper {
+	if maxPages <= 0 {
+		maxPages = 10 // Значение по умолчанию
 	}
+
+	scraper := &RodScraper{
+		Browser:      browser,
+		Logger:       logger,
+		maxPageCount: maxPages,
+		pagePool: &sync.Pool{
+			New: func() any {
+				page, err := stealth.Page(browser)
+				if err != nil {
+					logger.Error("Failed to create page", "error", err)
+					return nil
+				}
+				return page
+			},
+		},
+	}
+
+	return scraper
 }
 
-func NewTaskToScrape(task config.ScraperTask, ctx context.Context, scraper RodScraper, logger log.Logger) *TaskToScrape {
+// NewTaskToScrape создает новую задачу скрапинга
+func NewTaskToScrape(task config.ScraperTask, ctx context.Context, scraper Scraper, logger log.Logger) *TaskToScrape {
 	return &TaskToScrape{
 		Task:    task,
 		Context: ctx,
 		Scraper: scraper,
-		Logger:  &logger,
+		Logger:  logger,
 	}
 }
 
+// getPage получает страницу из пула или создает новую
+func (r *RodScraper) getPage() (*rod.Page, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.activePages >= r.maxPageCount {
+		return nil, errors.New("maximum number of active pages reached")
+	}
+
+	page := r.pagePool.Get()
+	if page == nil {
+		return nil, errors.New("failed to get page from pool")
+	}
+
+	r.activePages++
+	return page.(*rod.Page), nil
+}
+
+// releasePage возвращает страницу в пул
+func (r *RodScraper) releasePage(page *rod.Page) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Очищаем страницу перед возвратом в пул
+	page.MustNavigate("about:blank")
+
+	r.pagePool.Put(page)
+	r.activePages--
+}
+
+// Scrape выполняет скрапинг страницы
 func (r *RodScraper) Scrape(ctx context.Context, task config.ScraperTask) (map[string]string, error) {
-	r.Logger.Info("Scraping", "url:", task.URL)
+	r.Logger.Info("Scraping", "url", task.URL)
 
+	// Проверяем, отменен ли контекст
 	select {
 	case <-ctx.Done():
-		r.Logger.Error("Context time out", "error")
-		return nil, ctx.Err()
+		return nil, ErrContextCancelled
 	default:
 	}
 
-	page, err := stealth.Page(r.Browser)
+	// Получаем страницу из пула
+	page, err := r.getPage()
 	if err != nil {
-		r.Logger.Error("Failed to create page", "error")
+		r.Logger.Error("Failed to get page", "error", err)
+		return nil, err
+	}
+	defer r.releasePage(page)
+
+	// Навигация с учетом контекста
+	navCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	err = page.Context(navCtx).Navigate(task.URL)
+	if err != nil {
+		r.Logger.Error("Failed to navigate to page", "url", task.URL, "error", err)
 		return nil, err
 	}
 
-	select {
-	case <-ctx.Done():
-		r.Logger.Error("Scraping canceled during navigation to page: %w", ctx.Err())
-		return nil, ctx.Err()
-	default:
-	}
-
-	if err = page.Navigate(task.URL); err != nil {
-		r.Logger.Error("Failed to navigate to page: %w", err)
+	// Ожидание загрузки страницы с таймаутом
+	err = page.Context(ctx).WaitLoad()
+	if err != nil {
+		r.Logger.Error("Failed to wait for page load", "url", task.URL, "error", err)
 		return nil, err
 	}
-
-	page.MustWaitLoad()
 
 	results := make(map[string]string)
 	results["URL"] = task.URL
 	results["Type"] = task.Type
 
 	for key, selector := range task.Selectors {
+		// Проверяем, отменен ли контекст
 		select {
 		case <-ctx.Done():
 			r.Logger.Warn("Scraping canceled during selector processing", "key", key)
@@ -104,34 +179,49 @@ func (r *RodScraper) Scrape(ctx context.Context, task config.ScraperTask) (map[s
 			continue
 		}
 
-		elements, err := page.Elements(selector)
+		// Устанавливаем таймаут для поиска элементов
+		elemCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		elements, err := page.Context(elemCtx).Elements(selector)
+		cancel()
+
 		if err != nil || len(elements) == 0 {
-			r.Logger.Warn("No elements found", "selector", "error:", err)
+			r.Logger.Warn("No elements found", "selector", selector, "error", err)
 			results[key] = ""
 			continue
 		}
 
 		var texts []string
 		for _, element := range elements {
+			// Проверяем, отменен ли контекст
 			select {
 			case <-ctx.Done():
-				r.Logger.Warn("Scraping canceled due to context timeout processing element", "key", key)
-				return nil, err
+				r.Logger.Warn("Scraping canceled during element processing", "key", key)
+				return results, ctx.Err()
 			default:
 			}
 
-			textFromElement, err := element.Text()
+			// Устанавливаем таймаут для получения текста
+			textCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			text, err := element.Context(textCtx).Text()
+			cancel()
+
 			if err != nil {
-				r.Logger.Warn("Failed to get text from element", "selector:", selector)
+				r.Logger.Warn("Failed to get text from element", "selector", selector, "error", err)
 				continue
 			}
 
-			texts = append(texts, textFromElement)
+			texts = append(texts, text)
 		}
 
 		results[key] = strings.Join(texts, "\n")
-		r.Logger.Info("Successfully scraped", "key:", key, "count:", len(texts))
+		r.Logger.Info("Successfully scraped", "key", key, "count", len(texts))
 	}
 
 	return results, nil
+}
+
+// Close закрывает ресурсы скрапера
+func (r *RodScraper) Close() error {
+	// Закрываем браузер при завершении
+	return r.Browser.Close()
 }

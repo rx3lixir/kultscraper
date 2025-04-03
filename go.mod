@@ -1,4 +1,4 @@
-module gitub.com/rx3lixir/kultscraper
+module github.com/rx3lixir/kultscraper
 
 go 1.24.1
 
