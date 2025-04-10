@@ -11,6 +11,7 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/stealth"
 	"github.com/rx3lixir/kultscraper/internal/config"
+	"github.com/rx3lixir/kultscraper/internal/models"
 )
 
 var (
@@ -19,7 +20,7 @@ var (
 
 // Scraper интерфейс для скрапинга
 type Scraper interface {
-	Scrape(ctx context.Context, task config.ScraperTask) (map[string]string, error)
+	Scrape(ctx context.Context, task config.ScraperTask) (*models.ScrapingResult, error)
 	Close() error
 }
 
@@ -126,7 +127,7 @@ func (r *RodScraper) releasePage(page *rod.Page) {
 }
 
 // Scrape выполняет скрапинг страницы
-func (r *RodScraper) Scrape(ctx context.Context, task config.ScraperTask) (map[string]string, error) {
+func (r *RodScraper) Scrape(ctx context.Context, task config.ScraperTask) (*models.ScrapingResult, error) {
 	r.Logger.Info("Scraping", "url", task.URL)
 
 	// Проверяем, отменен ли контекст
@@ -161,21 +162,19 @@ func (r *RodScraper) Scrape(ctx context.Context, task config.ScraperTask) (map[s
 		return nil, err
 	}
 
-	results := make(map[string]string)
-	results["URL"] = task.URL
-	results["Type"] = task.Type
+	data := make(map[string]string)
 
 	for key, selector := range task.Selectors {
 		// Проверяем, отменен ли контекст
 		select {
 		case <-ctx.Done():
 			r.Logger.Warn("Scraping canceled during selector processing", "key", key)
-			return results, ctx.Err()
+			return models.NewScrapingResult(task.URL, task.Type, task.Name, data), ctx.Err()
 		default:
 		}
 
 		if selector == "" {
-			results[key] = ""
+			data[key] = ""
 			continue
 		}
 
@@ -185,8 +184,8 @@ func (r *RodScraper) Scrape(ctx context.Context, task config.ScraperTask) (map[s
 		cancel()
 
 		if err != nil || len(elements) == 0 {
-			r.Logger.Warn("No elements found", "selector", selector, "error", err)
-			results[key] = ""
+			r.Logger.Warn("No elements found", "selector", selector, "page", task.URL)
+			data[key] = ""
 			continue
 		}
 
@@ -196,7 +195,7 @@ func (r *RodScraper) Scrape(ctx context.Context, task config.ScraperTask) (map[s
 			select {
 			case <-ctx.Done():
 				r.Logger.Warn("Scraping canceled during element processing", "key", key)
-				return results, ctx.Err()
+				return models.NewScrapingResult(task.URL, task.Type, task.Name, data), ctx.Err()
 			default:
 			}
 
@@ -213,11 +212,13 @@ func (r *RodScraper) Scrape(ctx context.Context, task config.ScraperTask) (map[s
 			texts = append(texts, text)
 		}
 
-		results[key] = strings.Join(texts, "\n")
+		data[key] = strings.Join(texts, "\n")
 		r.Logger.Info("Successfully scraped", "key", key, "count", len(texts))
 	}
 
-	return results, nil
+	result := models.NewScrapingResult(task.URL, task.Type, task.Name, data)
+
+	return result, nil
 }
 
 // Close закрывает ресурсы скрапера

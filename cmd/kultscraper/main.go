@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-rod/rod"
 	"github.com/rx3lixir/kultscraper/internal/config"
+	"github.com/rx3lixir/kultscraper/internal/db"
 	"github.com/rx3lixir/kultscraper/internal/lib/logger"
 	"github.com/rx3lixir/kultscraper/internal/lib/work"
 	"github.com/rx3lixir/kultscraper/internal/scraper"
@@ -24,7 +25,7 @@ const (
 
 func main() {
 	logger := logger.InitLogger()
-	logger.Info("Starting KultScraper")
+	logger.Info("Starting Scrapper")
 
 	// Загружаем конфигурацию
 	cfg, err := config.LoadConfig()
@@ -54,13 +55,51 @@ func main() {
 	}
 	logger.Info("Loaded tasks", "count", len(tasks))
 
+	// Инициализация подключения к MongoDB
+	mongoConfig := db.NewDefaultConfig(
+		cfg.MongoDB.URI,
+		cfg.MongoDB.Database,
+		cfg.MongoDB.Collection,
+	)
+	mongoConfig.Username = cfg.MongoDB.Username
+	mongoConfig.Password = cfg.MongoDB.Password
+	mongoConfig.Timeout = cfg.MongoDB.ConnectTimeout
+
+	mongoClient, err := db.ConnectMongo(ctx, mongoConfig)
+	if err != nil {
+		logger.Error("Failed to connect to MongoDB", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("Successfully connected to MongoDB")
+
+	// Создание репозитория для работы с данными скраппинга
+	repository, err := db.NewMongoScraperRepo(
+		mongoClient,
+		mongoConfig.Database,
+		mongoConfig.CollectionName,
+	)
+	if err != nil {
+		logger.Error("Failed to create repository", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("Created MongoDB repository")
+
+	// Гарантируем закрытие соединения с MongoDB
+	defer func() {
+		if err := repository.Close(); err != nil {
+			logger.Error("Failed to close MongoDB connection", "error", err)
+		} else {
+			logger.Info("Mongo connetion closed successfully")
+		}
+	}()
+
 	// Инициализируем браузер
 	browser := rod.New().MustConnect()
 	defer browser.Close()
 
 	// Создаем скрапер
-	s := scraper.NewRodScraper(browser, *logger, maxPages)
-	defer s.Close()
+	rodScraper := scraper.NewRodScraper(browser, *logger, maxPages)
+	defer rodScraper.Close()
 
 	// Создаем пул работников
 	pool, err := work.NewPool(numWorkers, len(tasks))
@@ -101,7 +140,7 @@ func main() {
 	for _, task := range tasks {
 		// Создаем таймаут контекст для каждой задачи
 		taskCtx, taskCancel := context.WithTimeout(ctx, scrapeTimeout)
-		scraperTask := scraper.NewTaskToScrape(task, taskCtx, s, *logger)
+		scraperTask := scraper.NewTaskToScrape(task, taskCtx, rodScraper, *logger)
 
 		if err := pool.AddTask(scraperTask); err != nil {
 			logger.Error("Failed to add task", "url", task.URL, "error", err)
