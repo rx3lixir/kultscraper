@@ -197,9 +197,23 @@ func (r *MongoScraperRepo) SaveResult(ctx context.Context, result *models.Scrapi
 			return "", err
 		}
 
+		return existing.ID.Hex(), nil
+	} else if err == mongo.ErrNoDocuments {
+		// Документ не существует, создаем новый
+		result.ID = primitive.NewObjectID()
+		result.CreatedAt = time.Now()
+		result.UpdatedAt = result.CreatedAt
+
+		_, err = r.collection.InsertOne(timeout, result)
+		if err != nil {
+			return "", err
+		}
+
+		return result.ID.Hex(), nil
 	}
 
-	return existing.ID.Hex(), nil
+	// Какая-то другая непредвиденная ошибка
+	return "", err
 }
 
 // SaveResults сохраняет несколько результатов скраппинга
