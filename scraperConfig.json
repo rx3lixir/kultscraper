@@ -1,0 +1,56 @@
+[
+  {
+    "URL": "https://котокафе22.рф/#events",
+    "Type": "Клубы",
+    "Name": "Котокафе",
+    "Selectors": {
+      "Title": "div.js-store-prod-name",
+      "Date": "div.js-store-prod-descr"
+    }
+  },
+  {
+    "URL": "https://www.afisha.ru/barnaul/schedule_cinema/",
+    "Type": "Кино",
+    "Name": "Афиша Кино",
+    "Selectors": {
+      "Title": "a.CjnHd.y8A5E.nbCNS.yknrM",
+      "Genre": "div.S_wwn"
+    }
+  },
+  {
+    "URL": "https://www.afisha.ru/barnaul/schedule_concert/pop/",
+    "Type": "Концерт",
+    "Name": "Афиша Поп",
+    "Selectors": {
+      "Title": "a.CjnHd.y8A5E.nbCNS.yknrM",
+      "Date": "div._JP4u"
+    }
+  },
+  {
+    "URL": "https://www.afisha.ru/barnaul/schedule_concert/rock/",
+    "Type": "Концерт",
+    "Name": "Афиша Рок",
+    "Selectors": {
+      "Title": "a.CjnHd.y8A5E.nbCNS.yknrM",
+      "Date": "div._JP4u"
+    }
+  },
+  {
+    "URL": "https://www.afisha.ru/barnaul/schedule_concert/standup/",
+    "Type": "Концерт",
+    "Name": "Афиша Стендап",
+    "Selectors": {
+      "Title": "a.CjnHd.y8A5E.nbCNS.yknrM",
+      "Date": "div._JP4u"
+    }
+  },
+  {
+    "URL": "https://www.afisha.ru/barnaul/schedule_kids/",
+    "Type": "Детям",
+    "Name": "Афиша Детям",
+    "Selectors": {
+      "Title": "a.CjnHd.y8A5E.nbCNS.yknrM",
+      "Date": "div._JP4u"
+    }
+  }
+]

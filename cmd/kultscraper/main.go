@@ -12,6 +12,7 @@ import (
 	"github.com/rx3lixir/kultscraper/internal/db"
 	"github.com/rx3lixir/kultscraper/internal/lib/logger"
 	"github.com/rx3lixir/kultscraper/internal/lib/work"
+	"github.com/rx3lixir/kultscraper/internal/models"
 	"github.com/rx3lixir/kultscraper/internal/scraper"
 )
 
@@ -173,6 +174,21 @@ func main() {
 			}
 
 			logger.Info("Got result", "data", res)
+
+			// Преобразуем результат к типу *models.ScrapingResult
+			scrapingResult, ok := res.(*models.ScrapingResult)
+			if !ok {
+				logger.Error("Failed to convert result to ScrapingResult", "err")
+				continue
+			}
+
+			id, err := repository.SaveResult(ctx, scrapingResult)
+			if err != nil {
+				logger.Error("Failed to save result to MongoDB", "error", err)
+			} else {
+				logger.Info("Result saved to MongoDB", "id", id)
+			}
+
 			resultsProcessed++
 
 			// Если все задачи обработаны, выходим
